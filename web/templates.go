@@ -108,14 +108,16 @@ var TemplateText = map[string]string{
       <form class="navbar-form navbar-left" action="search">
         <div class="form-group">
           <input class="form-control"
-                placeholder="Search for some code..." role="search"
-                id="navsearchbox" type="text" name="q" autofocus
-                {{if .Query}}
-                value={{.Query}}
-                {{end}}>
+            placeholder="Search for some code..." role="search"
+            id="navsearchbox" type="text" name="q" autofocus
+            {{if .Query}}
+            value={{.Query}}
+            {{end}}>
           <div class="input-group">
             <div class="input-group-addon">Max Results</div>
             <input class="form-control" type="number" id="maxhits" name="num" value="{{.Num}}">
+            <div class="input-group-addon">Number of Context Lines</div>
+            <input class="form-control" type="number" id="numctxlines" name="ctx" value="{{.Ctx}}">
           </div>
           <button class="btn btn-primary">Search</button>
           <!--Hack: we use a hidden form field to keep track of the debug flag across searches-->
@@ -223,29 +225,38 @@ document.onkeydown=function(e){
       {{else}}.{{end}}
     </h5>
     {{range .FileMatches}}
+    {{if .URL}}<a name="{{.ResultID}}" class="result"></a><a href="{{.URL}}" >{{else}}<a name="{{.ResultID}}">{{end}}
+    <small>
+      {{.Repo}}:{{.FileName}} {{if .ScoreDebug}}<i>({{.ScoreDebug}})</i>{{end}}</a>:
+      <span style="font-weight: normal">[ {{if .Branches}}{{range .Branches}}<span class="label label-default">{{.}}</span>,{{end}}{{end}} ]</span>
+      {{if .Language}}<button
+	   title="restrict search to files written in {{.Language}}"
+	   onclick="zoektAddQ('lang:&quot;{{.Language}}&quot;')" class="label label-primary">language {{.Language}}</button></span>{{end}}
+      {{if .DuplicateID}}<a class="label label-dup" href="#{{.DuplicateID}}">Duplicate result</a>{{end}}
+    </small>
     <table class="table table-hover table-condensed">
-      <thead>
-        <tr>
-          <th>
-            {{if .URL}}<a name="{{.ResultID}}" class="result"></a><a href="{{.URL}}" >{{else}}<a name="{{.ResultID}}">{{end}}
-            <small>
-              {{.Repo}}:{{.FileName}} {{if .ScoreDebug}}<i>({{.ScoreDebug}})</i>{{end}}</a>:
-              <span style="font-weight: normal">[ {{if .Branches}}{{range .Branches}}<span class="label label-default">{{.}}</span>,{{end}}{{end}} ]</span>
-              {{if .Language}}<button
-                   title="restrict search to files written in {{.Language}}"
-                   onclick="zoektAddQ('lang:&quot;{{.Language}}&quot;')" class="label label-primary">language {{.Language}}</button></span>{{end}}
-              {{if .DuplicateID}}<a class="label label-dup" href="#{{.DuplicateID}}">Duplicate result</a>{{end}}
-            </small>
-          </th>
-        </tr>
-      </thead>
       {{if not .DuplicateID}}
       <tbody>
         {{range .Matches}}
         {{if gt .LineNum 0}}
         <tr>
+	  <td width="36px"></td>
           <td style="background-color: rgba(238, 238, 255, 0.6);">
-            <pre class="inline-pre"><span class="noselect">{{if .URL}}<a href="{{.URL}}">{{end}}<u>{{.LineNum}}</u>{{if .URL}}</a>{{end}}: </span>{{range .Fragments}}{{LimitPre 100 .Pre}}<b>{{.Match}}</b>{{LimitPost 100 (TrimTrailingNewline .Post)}}{{end}} {{if .ScoreDebug}}<i>({{.ScoreDebug}})</i>{{end}}</pre>
+	    <pre class="inline-pre"><span style="color:#a9a9a9;">{{.Before}}</span></pre>
+          </td>
+        </tr>
+        <tr>
+          <td>
+            <pre class="inline-pre"><span class="noselect">{{if .URL}}<a href="{{.URL}}">{{end}}<u>{{.LineNum}}</u>{{if .URL}}</a>{{end}}</pre>
+	  </td>
+	  <td style="background-color: rgba(238, 238, 255, 0.6);">
+	    <pre class="inline-pre"></span>{{range .Fragments}}{{LimitPre 100 .Pre}}<b>{{.Match}}</b>{{LimitPost 100 (TrimTrailingNewline .Post)}}{{end}} {{if .ScoreDebug}}<i>({{.ScoreDebug}})</i>{{end}}</pre>
+          </td>
+        </tr>
+        <tr>
+	  <td></td>
+          <td style="background-color: rgba(238, 238, 255, 0.6);">
+	    <pre class="inline-pre"><span style="color:#a9a9a9;">{{.After}}</span></pre>
           </td>
         </tr>
         {{end}}
