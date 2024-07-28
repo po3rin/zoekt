@@ -276,7 +276,8 @@ func (s *Server) serveSearchErr(r *http.Request) (*ApiSearchResult, error) {
 	}
 
 	sOpts := zoekt.SearchOptions{
-		MaxWallTime: 10 * time.Second,
+		MaxWallTime:      10 * time.Second,
+		UseDocumentRanks: true,
 	}
 
 	numCtxLines := 0
@@ -287,6 +288,8 @@ func (s *Server) serveSearchErr(r *http.Request) (*ApiSearchResult, error) {
 		}
 	}
 	sOpts.NumContextLines = numCtxLines
+	sOpts.DocumentRanksWeight = 1000
+	sOpts.UseDocumentRanks = true
 
 	sOpts.SetDefaults()
 	sOpts.MaxDocDisplayCount = num
