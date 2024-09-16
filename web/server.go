@@ -276,19 +276,20 @@ func (s *Server) serveSearchErr(r *http.Request) (*ApiSearchResult, error) {
 	}
 
 	sOpts := zoekt.SearchOptions{
-		MaxWallTime: 10 * time.Second,
+		MaxWallTime:      10 * time.Second,
+		UseDocumentRanks: true,
 	}
 
 	numCtxLines := 0
-	if qvals.Get("format") == "json" {
-		if ctxLinesStr := qvals.Get("ctx"); ctxLinesStr != "" {
-			numCtxLines, err = strconv.Atoi(ctxLinesStr)
-			if err != nil || numCtxLines < 0 || numCtxLines > 10 {
-				return nil, fmt.Errorf("Number of context lines must be between 0 and 10")
-			}
+	if ctxLinesStr := qvals.Get("ctx"); ctxLinesStr != "" {
+		numCtxLines, err = strconv.Atoi(ctxLinesStr)
+		if err != nil || numCtxLines < 0 || numCtxLines > 10 {
+			return nil, fmt.Errorf("Number of context lines must be between 0 and 10")
 		}
 	}
 	sOpts.NumContextLines = numCtxLines
+	sOpts.DocumentRanksWeight = 1000
+	sOpts.UseDocumentRanks = true
 
 	sOpts.SetDefaults()
 	sOpts.MaxDocDisplayCount = num
@@ -313,6 +314,7 @@ func (s *Server) serveSearchErr(r *http.Request) (*ApiSearchResult, error) {
 		Last: LastInput{
 			Query:     queryStr,
 			Num:       num,
+			Ctx:       numCtxLines,
 			AutoFocus: true,
 		},
 		Stats:       result.Stats,

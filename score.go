@@ -95,6 +95,7 @@ func (d *indexData) scoreFile(fileMatch *FileMatch, doc uint32, mt matchTree, kn
 			// The file rank represents a log (base 2) count. The log ranks should be bounded at 32, but we
 			// cap it just in case to ensure it falls in the range [0, 1].
 			normalized := math.Min(1.0, ranks[0]/32.0)
+			fmt.Println(weight * normalized)
 			addScore("file-rank", weight*normalized)
 		}
 	}
