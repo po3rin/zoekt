@@ -204,6 +204,9 @@ func main() {
 
 	sOpts := zoekt.SearchOptions{
 		DebugScore: *debug,
+		// DocumentRanksWeight: 5,
+		// UseDocumentRanks: true,
+		// ChunkMatches:        true,
 	}
 	sres, err := searcher.Search(context.Background(), q, &sOpts)
 	if err != nil {

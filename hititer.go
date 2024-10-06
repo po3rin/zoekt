@@ -118,6 +118,11 @@ func (d *indexData) trigramHitIterator(ng ngram, caseSensitive, fileName bool) (
 	iters := make([]hitIterator, 0, len(variants))
 	ngramLookups := 0
 	ngrams := d.ngrams(fileName)
+
+	fmt.Println("---------")
+	fmt.Println(ng.String())
+	fmt.Println(ngrams.bt.String())
+
 	for _, v := range variants {
 		sec := ngrams.Get(v)
 		ngramLookups++

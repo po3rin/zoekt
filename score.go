@@ -42,6 +42,8 @@ func (m *FileMatch) addScore(what string, computed float64, raw float64, debugSc
 // scoreFile computes a score for the file match using various scoring signals, like
 // whether there's an exact match on a symbol, the number of query clauses that matched, etc.
 func (d *indexData) scoreFile(fileMatch *FileMatch, doc uint32, mt matchTree, known map[matchTree]bool, opts *SearchOptions) {
+	// fmt.Println("========================")
+	// fmt.Println(fileMatch.FileName)
 	atomMatchCount := 0
 	visitMatchAtoms(mt, known, func(mt matchTree) {
 		atomMatchCount++
@@ -53,12 +55,14 @@ func (d *indexData) scoreFile(fileMatch *FileMatch, doc uint32, mt matchTree, kn
 
 	// atom-count boosts files with matches from more than 1 atom. The
 	// maximum boost is scoreFactorAtomMatch.
+	// fmt.Println("atomMatchCount:", atomMatchCount)
 	if atomMatchCount > 0 {
 		fileMatch.addScore("atom", (1.0-1.0/float64(atomMatchCount))*scoreFactorAtomMatch, float64(atomMatchCount), opts.DebugScore)
 	}
 
 	maxFileScore := 0.0
 	for i := range fileMatch.LineMatches {
+		// fmt.Printf("line match: %v\n", fileMatch.LineMatches[i].Score)
 		if maxFileScore < fileMatch.LineMatches[i].Score {
 			maxFileScore = fileMatch.LineMatches[i].Score
 		}
@@ -68,6 +72,7 @@ func (d *indexData) scoreFile(fileMatch *FileMatch, doc uint32, mt matchTree, kn
 	}
 
 	for i := range fileMatch.ChunkMatches {
+		// fmt.Printf("chunk match: %v\n", fileMatch.ChunkMatches[i].Score)
 		if maxFileScore < fileMatch.ChunkMatches[i].Score {
 			maxFileScore = fileMatch.ChunkMatches[i].Score
 		}
@@ -100,7 +105,12 @@ func (d *indexData) scoreFile(fileMatch *FileMatch, doc uint32, mt matchTree, kn
 	}
 
 	md := d.repoMetaData[d.repos[doc]]
+	// fmt.Println("-----doc order----")
+	// fmt.Println(float64(doc))
+	// fmt.Println(len(d.boundaries))
 	addScore("doc-order", scoreFileOrderFactor*(1.0-float64(doc)/float64(len(d.boundaries))))
+	// fmt.Println("-----repo rank----")
+	// fmt.Println(float64(md.Rank))
 	addScore("repo-rank", scoreRepoRankFactor*float64(md.Rank)/maxUInt16)
 
 	if opts.DebugScore {

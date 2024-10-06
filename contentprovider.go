@@ -707,6 +707,7 @@ func (p *contentProvider) candidateMatchScore(ms []*candidateMatch, language str
 
 	if debug {
 		maxScore.what = fmt.Sprintf("score:%.2f <- %s", maxScore.score, strings.TrimSuffix(maxScore.what, ", "))
+		fmt.Println(maxScore.what)
 	}
 
 	return maxScore.score, maxScore.what, symbolInfo

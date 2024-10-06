@@ -1087,6 +1087,7 @@ func mkRankedShard(s zoekt.Searcher) *rankedShard {
 		}
 	}
 
+	// fmt.Println(maxPriority)
 	return &rankedShard{
 		Searcher: s,
 		repos:    repos,

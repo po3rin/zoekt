@@ -117,14 +117,18 @@ func (r *reader) readTOC(toc *indexTOC) error {
 		// and then a list of string-tagged type-indicated sections.
 		secs := toc.sectionsTagged()
 		for r.off < tocSection.off+tocSection.sz {
+			// fmt.Println("---------toc-------")
+			// fmt.Println(r.off)
 			tag, err := r.Str()
 			if err != nil {
 				return err
 			}
+			// fmt.Println(tag)
 			kind, err := r.Varint()
 			if err != nil {
 				return err
 			}
+			// fmt.Println(kind)
 			sec := secs[tag]
 			if sec != nil && sec.kind() == sectionKind(kind) {
 				// happy path
@@ -457,6 +461,7 @@ func (d *indexData) newBtreeIndex(ngramSec simpleSection, postings compoundSecti
 	bt := newBtree(btreeOpts{bucketSize: btreeBucketSize, v: 50})
 	for i := 0; i < len(textContent); i += ngramEncoding {
 		ng := ngram(binary.BigEndian.Uint64(textContent[i : i+ngramEncoding]))
+		// fmt.Println(ng.String())
 		bt.insert(ng)
 	}
 	bt.freeze()
@@ -466,6 +471,7 @@ func (d *indexData) newBtreeIndex(ngramSec simpleSection, postings compoundSecti
 	// hold on to simple sections (8 bytes each)
 	bi.ngramSec = ngramSec
 	bi.postingIndex = postings.index
+	// fmt.Println(bi.DumpMap())
 
 	return bi, nil
 }
@@ -557,6 +563,7 @@ func (d *indexData) readRanks(toc *indexTOC) error {
 // of the Searcher itself, ie. []byte members should be copied into
 // fresh buffers if the result is to survive closing the shard.
 func NewSearcher(r IndexFile) (Searcher, error) {
+	// PrintNgramStats(r)
 	rd := &reader{r: r}
 
 	var toc indexTOC
@@ -662,7 +669,7 @@ func PrintNgramStats(r IndexFile) error {
 	var rNgram [3]rune
 	for ngram, ss := range id.contentNgrams.DumpMap() {
 		rNgram = ngramToRunes(ngram)
-		fmt.Printf("%d\t%q\n", ss.sz, string(rNgram[:]))
+		fmt.Printf("%d\t%d\t%q\n", ss.sz, ss.off, string(rNgram[:]))
 	}
 	return nil
 }

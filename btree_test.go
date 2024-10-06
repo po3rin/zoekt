@@ -23,6 +23,35 @@ func TestBTree_sorted(t *testing.T) {
 func TestFindBucket(t *testing.T) {
 	bt := newBtree(btreeOpts{bucketSize: 4, v: 2})
 	insertMany(t, bt, []ngram{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+	fmt.Println(bt.String())
+
+	// bucket size: 2
+	// inner nodes only
+	//
+	//        [3,5,7]
+	//    /   /   \   \
+	//  [2] [4]  [6] [8,9]
+	// [1] [2] [3] [4] [5] [6] [7] [8] [9, 10]
+	//
+
+	// bucket size: 3
+	// inner nodes only
+	//
+	//        [    4    ]
+	//        /   		\
+	//      [ 2, 6 ]  	[8]
+	//  [1] [2,3] [4,5] [6,7] [8,9,10]
+	//
+
+	// bucket size: 4
+	// inner nodes only
+	//
+	//        [    5    ]
+	//        /   		\
+	//      [   3   ]  	[7]
+	//    /   \ 	\     \
+	//  [1,2] [3,4] [5,6], [7,8,9,10]
+	//
 
 	buckets := 0
 	offset := 0
@@ -44,15 +73,64 @@ func TestFindBucket(t *testing.T) {
 		wantPostingIndexOffset int
 	}{
 		{
+			ng:                     1,
+			wantBucketIndex:        0,
+			wantPostingIndexOffset: 0,
+		},
+		{
+			ng:                     2,
+			wantBucketIndex:        0,
+			wantPostingIndexOffset: 0,
+		},
+		{
+			ng:                     3,
+			wantBucketIndex:        0,
+			wantPostingIndexOffset: 0,
+		},
+		{
+			ng:                     4,
+			wantBucketIndex:        0,
+			wantPostingIndexOffset: 0,
+		},
+		{
+			ng:                     5,
+			wantBucketIndex:        0,
+			wantPostingIndexOffset: 0,
+		},
+		{
+			ng:                     6,
+			wantBucketIndex:        0,
+			wantPostingIndexOffset: 0,
+		},
+		{
 			ng:                     7,
-			wantBucketIndex:        3,
-			wantPostingIndexOffset: 6,
+			wantBucketIndex:        0,
+			wantPostingIndexOffset: 0,
+		},
+		{
+			ng:                     8,
+			wantBucketIndex:        0,
+			wantPostingIndexOffset: 0,
+		},
+		{
+			ng:                     9,
+			wantBucketIndex:        0,
+			wantPostingIndexOffset: 0,
+		},
+		{
+			ng:                     10,
+			wantBucketIndex:        0,
+			wantPostingIndexOffset: 0,
 		},
 	}
 
 	for _, tt := range cases {
+		fmt.Println("-------------")
+		fmt.Printf("%d\n", tt.ng)
 		t.Run(fmt.Sprintf("ngram: %d", tt.ng), func(t *testing.T) {
 			haveBucketIndex, havePostingIndexOffset := bt.find(tt.ng)
+			fmt.Println(haveBucketIndex)
+			fmt.Println(havePostingIndexOffset)
 			if tt.wantBucketIndex != haveBucketIndex {
 				t.Fatalf("bucketIndex: want %d, got %d", tt.wantBucketIndex, haveBucketIndex)
 			}

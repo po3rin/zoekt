@@ -74,6 +74,11 @@ func run() int {
 	opts.IsDelta = *isDelta
 	opts.DocumentRanksPath = *offlineRanking
 	opts.DocumentRanksVersion = *offlineRankingVersion
+	// conf := make(map[string]string, 0)
+	// conf["priority"] = "10"
+	// opts.RepositoryDescription.RawConfig = conf
+
+	// fmt.Printf("%+v\n", opts.RepositoryDescription)
 
 	var branches []string
 	if *branchesStr != "" {

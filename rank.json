@@ -1,0 +1,7 @@
+{
+    "paths": {
+        "main.go": 10,
+        "lib.go": 5,
+        "README.md": 3
+    }
+}
