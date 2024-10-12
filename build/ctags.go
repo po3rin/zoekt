@@ -57,7 +57,10 @@ func parseSymbols(todo []*zoekt.Document, languageMap ctags.LanguageMap, parserB
 
 		zoekt.DetermineLanguageIfUnknown(doc)
 
+		// fmt.Println(doc.Language)
+		// fmt.Println(languageMap)
 		parserType := languageMap[normalizeLanguage(doc.Language)]
+
 		if parserType == ctags.NoCTags {
 			continue
 		}
@@ -67,8 +70,13 @@ func parseSymbols(todo []*zoekt.Document, languageMap ctags.LanguageMap, parserB
 			parserType = ctags.UniversalCTags
 		}
 
+		// fmt.Println(parserType)
+
 		monitor.BeginParsing(doc)
 		es, err := parser.Parse(doc.Name, doc.Content, parserType)
+		// for _, e := range es {
+		// 	fmt.Println(e.Kind)
+		// }
 		monitor.EndParsing(es)
 
 		if err != nil {
@@ -290,9 +298,9 @@ func (m *monitor) run() {
 	for {
 		select {
 		case <-m.done:
-			now := time.Now()
+			// now := time.Now()
 			m.mu.Lock()
-			log.Printf("symbol analysis finished for shard statistics: duration=%v symbols=%d bytes=%d", now.Sub(m.start).Truncate(time.Second), m.totalSymbols, m.totalSize)
+			// log.Printf("symbol analysis finished for shard statistics: duration=%v symbols=%d bytes=%d", now.Sub(m.start).Truncate(time.Second), m.totalSymbols, m.totalSize)
 			m.mu.Unlock()
 			return
 

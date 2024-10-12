@@ -319,8 +319,8 @@ func (b btreeIndex) Get(ng ngram) (ss simpleSection) {
 
 	// find bucket
 	bucketIndex, postingIndexOffset := b.bt.find(ng)
-	fmt.Println("bucketIndex:", bucketIndex)
-	fmt.Println("postingIndexOffset:", postingIndexOffset)
+	// fmt.Println("bucketIndex:", bucketIndex)
+	// fmt.Println("postingIndexOffset:", postingIndexOffset)
 
 	// read bucket into memory
 	off, sz := b.getBucket(bucketIndex)
@@ -345,7 +345,8 @@ func (b btreeIndex) Get(ng ngram) (ss simpleSection) {
 		return simpleSection{}
 	}
 
-	fmt.Println(x)
+	// fmt.Println(postingIndexOffset)
+	// fmt.Println(x)
 
 	return b.getPostingList(postingIndexOffset + x)
 }

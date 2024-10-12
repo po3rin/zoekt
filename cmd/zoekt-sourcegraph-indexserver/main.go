@@ -89,6 +89,15 @@ var (
 		"name",  // name of the repository that was indexed
 	})
 
+	metricIndexingDelay = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "index_indexing_delay_seconds",
+		Help:    "A histogram of durations from when an index job is added to the queue, to the time it completes.",
+		Buckets: prometheus.ExponentialBuckets(60, 2, 12), // 1m -> ~3 days
+	}, []string{
+		"state", // state is an indexState
+		"name",  // the name of the repository that was indexed
+	})
+
 	metricFetchDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "index_fetch_seconds",
 		Help:    "A histogram of latencies for fetching a repository.",
@@ -123,9 +132,26 @@ var (
 		Help: "Counts the number of repos we stopped tracking.",
 	})
 
-	clientMetricsOnce sync.Once
-	clientMetrics     *grpcprom.ClientMetrics
+	// clientMetricsOnce returns a singleton instance of the client metrics
+	// that are shared across all gRPC clients that this process creates.
+	//
+	// This function panics if the metrics cannot be registered with the default
+	// Prometheus registry.
+	clientMetricsOnce = sync.OnceValue(func() *grpcprom.ClientMetrics {
+		clientMetrics := grpcprom.NewClientMetrics(
+			grpcprom.WithClientCounterOptions(),
+			grpcprom.WithClientHandlingTimeHistogram(), // record the overall request latency for a gRPC request
+			grpcprom.WithClientStreamRecvHistogram(),   // record how long it takes for a client to receive a message during a streaming RPC
+			grpcprom.WithClientStreamSendHistogram(),   // record how long it takes for a client to send a message during a streaming RPC
+		)
+		prometheus.DefaultRegisterer.MustRegister(clientMetrics)
+		return clientMetrics
+	})
 )
+
+// 1 MB; match https://sourcegraph.sgdev.org/github.com/sourcegraph/sourcegraph/-/blob/cmd/symbols/internal/symbols/search.go#L22
+// NOTE: if you change this, you must also update gitIndex to use the same value when fetching the repo.
+const MaxFileSize = 1 << 20
 
 // set of repositories that we want to capture separate indexing metrics for
 var reposWithSeparateIndexingMetrics = make(map[string]struct{})
@@ -400,12 +426,13 @@ func (s *Server) processQueue() {
 			continue
 		}
 
-		opts, ok := s.queue.Pop()
+		item, ok := s.queue.Pop()
 		if !ok {
 			time.Sleep(time.Second)
 			continue
 		}
 
+		opts := item.Opts
 		args := s.indexArgs(opts)
 
 		ran := s.muIndexDir.With(opts.Name, func() {
@@ -416,8 +443,10 @@ func (s *Server) processQueue() {
 			state, err := s.Index(args)
 
 			elapsed := time.Since(start)
-
 			metricIndexDuration.WithLabelValues(string(state), repoNameForMetric(opts.Name)).Observe(elapsed.Seconds())
+
+			indexDelay := time.Since(item.DateAddedToQueue)
+			metricIndexingDelay.WithLabelValues(string(state), repoNameForMetric(opts.Name)).Observe(indexDelay.Seconds())
 
 			if err != nil {
 				log.Printf("error indexing %s: %s", args.String(), err)
@@ -434,6 +463,7 @@ func (s *Server) processQueue() {
 					sglog.Uint32("id", args.RepoID),
 					sglog.Strings("branches", branches),
 					sglog.Duration("duration", elapsed),
+					sglog.Duration("index_delay", indexDelay),
 				)
 			case indexStateSuccessMeta:
 				log.Printf("updated meta %s in %v", args.String(), elapsed)
@@ -513,6 +543,7 @@ func jitterTicker(d time.Duration, sig ...os.Signal) <-chan struct{} {
 // Index starts an index job for repo name at commit.
 func (s *Server) Index(args *indexArgs) (state indexState, err error) {
 	tr := trace.New("index", args.Name)
+	tr.SetMaxEvents(30) // Ensure we capture all indexing events
 
 	defer func() {
 		if err != nil {
@@ -642,9 +673,8 @@ func (s *Server) indexArgs(opts IndexOptions) *indexArgs {
 		IndexDir:     s.IndexDir,
 		Parallelism:  parallelism,
 		Incremental:  true,
-
-		// 1 MB; match https://sourcegraph.sgdev.org/github.com/sourcegraph/sourcegraph/-/blob/cmd/symbols/internal/symbols/search.go#L22
-		FileLimit: 1 << 20,
+		FileLimit:    MaxFileSize,
+		ShardMerging: s.shardMerging,
 	}
 }
 
@@ -738,7 +768,7 @@ var rootTmpl = template.Must(template.New("name").Parse(`
             <a href="?show_repos=false">hide repos</a><br />
             <table style="margin-top: 20px">
                 <th style="text-align:left">Name</th>
-                <th style="text-align:left">ID</th>
+                <th style="text-align:left">ID (click to reindex)</th>
                 {{range .Repos}}
                     <tr>
                         <td>{{.Name}}</td>
@@ -1065,6 +1095,18 @@ func srcLogLevelIsDebug() bool {
 	return strings.EqualFold(lvl, "dbug") || strings.EqualFold(lvl, "debug")
 }
 
+func getEnvWithDefaultBool(k string, defaultVal bool) bool {
+	v := os.Getenv(k)
+	if v == "" {
+		return defaultVal
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		log.Fatalf("error parsing ENV %s to int64: %s", k, err)
+	}
+	return b
+}
+
 func getEnvWithDefaultInt64(k string, defaultVal int64) int64 {
 	v := os.Getenv(k)
 	if v == "" {
@@ -1193,15 +1235,14 @@ type rootConfig struct {
 	listen           string
 	hostname         string
 	cpuFraction      float64
-	blockProfileRate int
 
 	// config values related to shard merging
-	vacuumInterval time.Duration
-	mergeInterval  time.Duration
-	targetSize     int64
-	minSize        int64
-	minAgeDays     int
-	maxPriority    float64
+	disableShardMerging bool
+	vacuumInterval      time.Duration
+	mergeInterval       time.Duration
+	targetSize          int64
+	minSize             int64
+	minAgeDays          int
 
 	// config values related to backoff indexing repos with one or more consecutive failures
 	backoffDuration    time.Duration
@@ -1216,17 +1257,16 @@ func (rc *rootConfig) registerRootFlags(fs *flag.FlagSet) {
 	fs.StringVar(&rc.listen, "listen", ":6072", "listen on this address.")
 	fs.StringVar(&rc.hostname, "hostname", zoekt.HostnameBestEffort(), "the name we advertise to Sourcegraph when asking for the list of repositories to index. Can also be set via the NODE_NAME environment variable.")
 	fs.Float64Var(&rc.cpuFraction, "cpu_fraction", 1.0, "use this fraction of the cores for indexing.")
-	fs.IntVar(&rc.blockProfileRate, "block_profile_rate", getEnvWithDefaultInt("BLOCK_PROFILE_RATE", -1), "Sampling rate of Go's block profiler in nanoseconds. Values <=0 disable the blocking profiler Var(default). A value of 1 includes every blocking event. See https://pkg.go.dev/runtime#SetBlockProfileRate")
 	fs.DurationVar(&rc.backoffDuration, "backoff_duration", getEnvWithDefaultDuration("BACKOFF_DURATION", 10*time.Minute), "for the given duration we backoff from enqueue operations for a repository that's failed its previous indexing attempt. Consecutive failures increase the duration of the delay linearly up to the maxBackoffDuration. A negative value disables indexing backoff.")
 	fs.DurationVar(&rc.maxBackoffDuration, "max_backoff_duration", getEnvWithDefaultDuration("MAX_BACKOFF_DURATION", 120*time.Minute), "the maximum duration to backoff from enqueueing a repo for indexing.  A negative value disables indexing backoff.")
 
 	// flags related to shard merging
+	fs.BoolVar(&rc.disableShardMerging, "shard_merging", getEnvWithDefaultBool("SRC_DISABLE_SHARD_MERGING", false), "disable shard merging")
 	fs.DurationVar(&rc.vacuumInterval, "vacuum_interval", getEnvWithDefaultDuration("SRC_VACUUM_INTERVAL", 24*time.Hour), "run vacuum this often")
 	fs.DurationVar(&rc.mergeInterval, "merge_interval", getEnvWithDefaultDuration("SRC_MERGE_INTERVAL", 8*time.Hour), "run merge this often")
 	fs.Int64Var(&rc.targetSize, "merge_target_size", getEnvWithDefaultInt64("SRC_MERGE_TARGET_SIZE", 2000), "the target size of compound shards in MiB")
 	fs.Int64Var(&rc.minSize, "merge_min_size", getEnvWithDefaultInt64("SRC_MERGE_MIN_SIZE", 1800), "the minimum size of a compound shard in MiB")
 	fs.IntVar(&rc.minAgeDays, "merge_min_age", getEnvWithDefaultInt("SRC_MERGE_MIN_AGE", 7), "the time since the last commit in days. Shards with newer commits are excluded from merging.")
-	fs.Float64Var(&rc.maxPriority, "merge_max_priority", getEnvWithDefaultFloat64("SRC_MERGE_MAX_PRIORITY", 100), "the maximum priority a shard can have to be considered for merging.")
 }
 
 func startServer(conf rootConfig) error {
@@ -1235,7 +1275,7 @@ func startServer(conf rootConfig) error {
 		return err
 	}
 
-	profiler.Init("zoekt-sourcegraph-indexserver", zoekt.Version, conf.blockProfileRate)
+	profiler.Init("zoekt-sourcegraph-indexserver")
 	setCompoundShardCounter(s.IndexDir)
 
 	if conf.listen != "" {
@@ -1326,10 +1366,6 @@ func newServer(conf rootConfig) (*Server, error) {
 
 	// Tune GOMAXPROCS to match Linux container CPU quota.
 	_, _ = maxprocs.Set()
-
-	// Set the sampling rate of Go's block profiler: https://github.com/DataDog/go-profiler-notes/blob/main/guide/README.md#block-profiler.
-	// The block profiler is disabled by default and should be enabled with care in production
-	runtime.SetBlockProfileRate(conf.blockProfileRate)
 
 	// Automatically prepend our own path at the front, to minimize
 	// required configuration.
@@ -1428,7 +1464,7 @@ func newServer(conf rootConfig) (*Server, error) {
 		Interval:                          conf.interval,
 		CPUCount:                          cpuCount,
 		queue:                             *q,
-		shardMerging:                      zoekt.ShardMergingEnabled(),
+		shardMerging:                      !conf.disableShardMerging,
 		deltaBuildRepositoriesAllowList:   deltaBuildRepositoriesAllowList,
 		deltaShardNumberFallbackThreshold: deltaShardNumberFallbackThreshold,
 		repositoriesSkipSymbolsCalculationAllowList: reposShouldSkipSymbolsCalculation,
@@ -1439,7 +1475,6 @@ func newServer(conf rootConfig) (*Server, error) {
 			targetSizeBytes: conf.targetSize * 1024 * 1024,
 			minSizeBytes:    conf.minSize * 1024 * 1024,
 			minAgeDays:      conf.minAgeDays,
-			maxPriority:     conf.maxPriority,
 		},
 		timeout: indexingTimeout,
 	}, err
@@ -1477,7 +1512,7 @@ func internalActorStreamInterceptor() grpc.StreamClientInterceptor {
 const defaultGRPCMessageReceiveSizeBytes = 90 * 1024 * 1024 // 90 MB
 
 func dialGRPCClient(addr string, logger sglog.Logger, additionalOpts ...grpc.DialOption) (proto.ZoektConfigurationServiceClient, error) {
-	metrics := mustGetClientMetrics()
+	metrics := clientMetricsOnce()
 
 	// If the service seems to be unavailable, this
 	// will retry after [1s, 2s, 4s, 8s, 16s] with a jitterFraction of .1
@@ -1529,26 +1564,6 @@ func dialGRPCClient(addr string, logger sglog.Logger, additionalOpts ...grpc.Dia
 
 	client := proto.NewZoektConfigurationServiceClient(cc)
 	return client, nil
-}
-
-// mustGetClientMetrics returns a singleton instance of the client metrics
-// that are shared across all gRPC clients that this process creates.
-//
-// This function panics if the metrics cannot be registered with the default
-// Prometheus registry.
-func mustGetClientMetrics() *grpcprom.ClientMetrics {
-	clientMetricsOnce.Do(func() {
-		clientMetrics = grpcprom.NewClientMetrics(
-			grpcprom.WithClientCounterOptions(),
-			grpcprom.WithClientHandlingTimeHistogram(), // record the overall request latency for a gRPC request
-			grpcprom.WithClientStreamRecvHistogram(),   // record how long it takes for a client to receive a message during a streaming RPC
-			grpcprom.WithClientStreamSendHistogram(),   // record how long it takes for a client to send a message during a streaming RPC
-		)
-
-		prometheus.DefaultRegisterer.MustRegister(clientMetrics)
-	})
-
-	return clientMetrics
 }
 
 // addDefaultPort adds a default port to a URL if one is not specified.

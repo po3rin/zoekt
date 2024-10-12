@@ -4,7 +4,6 @@ import (
 	"crypto/sha1"
 	"fmt"
 	"io"
-	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -70,7 +69,7 @@ func builderWriteAll(fn string, ib *IndexBuilder) error {
 	if err := ib.Write(f); err != nil {
 		return err
 	}
-	fi, err := f.Stat()
+	// fi, err := f.Stat()
 	if err != nil {
 		return err
 	}
@@ -82,8 +81,8 @@ func builderWriteAll(fn string, ib *IndexBuilder) error {
 		return err
 	}
 
-	log.Printf("finished shard %s: %d index bytes (overhead %3.1f)", fn, fi.Size(),
-		float64(fi.Size())/float64(ib.ContentSize()+1))
+	// log.Printf("finished shard %s: %d index bytes (overhead %3.1f)", fn, fi.Size(),
+	// float64(fi.Size())/float64(ib.ContentSize()+1))
 
 	return nil
 }

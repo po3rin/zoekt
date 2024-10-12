@@ -37,7 +37,8 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar"
-	"github.com/grafana/regexp"
+	"github.com/dustin/go-humanize"
+	"github.com/go-enry/go-enry/v2"
 	"github.com/rs/xid"
 
 	"github.com/sourcegraph/zoekt"
@@ -88,9 +89,6 @@ type Options struct {
 	// If set, ctags must succeed.
 	CTagsMustSucceed bool
 
-	// Write memory profiles to this file.
-	MemProfile string
-
 	// LargeFiles is a slice of glob patterns, including ** for any number
 	// of directories, where matching file paths should be indexed
 	// regardless of their size. The full pattern syntax is here:
@@ -116,6 +114,16 @@ type Options struct {
 	changedOrRemovedFiles []string
 
 	LanguageMap ctags.LanguageMap
+
+	// ShardMerging is true if builder should respect compound shards. This is a
+	// Sourcegraph specific option.
+	ShardMerging bool
+
+	// HeapProfileTriggerBytes is the heap usage in bytes that will trigger a memory profile. If 0, no memory profile will be triggered.
+	// Profiles will be written to files named `index-memory.prof.n` in the index directory. No more than 10 files are written.
+	//
+	// Note: heap checking is "best effort", and it's possible for the process to OOM without triggering the heap profile.
+	HeapProfileTriggerBytes uint64
 }
 
 // HashOptions contains only the options in Options that upon modification leads to IndexState of IndexStateMismatch during the next index building.
@@ -190,10 +198,10 @@ func (o *Options) Flags(fs *flag.FlagSet) {
 	fs.StringVar(&o.IndexDir, "index", x.IndexDir, "directory for search indices")
 	fs.BoolVar(&o.CTagsMustSucceed, "require_ctags", x.CTagsMustSucceed, "If set, ctags calls must succeed.")
 	fs.Var(largeFilesFlag{o}, "large_file", "A glob pattern where matching files are to be index regardless of their size. You can add multiple patterns by setting this more than once.")
-	fs.StringVar(&o.MemProfile, "memprofile", "", "write memory profile(s) to `file.shardnum`. Note: sets parallelism to 1.")
 
 	// Sourcegraph specific
 	fs.BoolVar(&o.DisableCTags, "disable_ctags", x.DisableCTags, "If set, ctags will not be called.")
+	fs.BoolVar(&o.ShardMerging, "shard_merging", x.ShardMerging, "If set, builder will respect compound shards.")
 }
 
 // Args generates command line arguments for o. It is the "inverse" of Flags.
@@ -233,6 +241,10 @@ func (o *Options) Args() []string {
 		args = append(args, "-disable_ctags")
 	}
 
+	if o.ShardMerging {
+		args = append(args, "-shard_merging")
+	}
+
 	return args
 }
 
@@ -260,6 +272,10 @@ type Builder struct {
 
 	// indexTime is set by tests for doing reproducible builds.
 	indexTime time.Time
+
+	// heapProfileMu is used to ensure that only one memory profile is written at a time
+	heapProfileMu  sync.Mutex
+	heapProfileNum int
 
 	// a sortable 20 chars long id.
 	id string
@@ -774,7 +790,7 @@ func (b *Builder) Finish() error {
 
 	for p := range toDelete {
 		// Don't delete compound shards, set tombstones instead.
-		if zoekt.ShardMergingEnabled() && strings.HasPrefix(filepath.Base(p), "compound-") {
+		if b.opts.ShardMerging && strings.HasPrefix(filepath.Base(p), "compound-") {
 			if !strings.HasSuffix(p, ".zoekt") {
 				continue
 			}
@@ -826,7 +842,7 @@ func (b *Builder) flush() error {
 	shard := b.nextShardNum
 	b.nextShardNum++
 
-	if b.opts.Parallelism > 1 && b.opts.MemProfile == "" {
+	if b.opts.Parallelism > 1 {
 		b.building.Add(1)
 		b.throttle <- 1
 		go func() {
@@ -851,33 +867,11 @@ func (b *Builder) flush() error {
 		if err == nil {
 			b.finishedShards[done.temp] = done.final
 		}
-		if b.opts.MemProfile != "" {
-			// drop memory, and profile.
-			todo = nil
-			b.writeMemProfile(b.opts.MemProfile)
-		}
 
 		return b.buildError
 	}
 
 	return nil
-}
-
-var profileNumber int
-
-func (b *Builder) writeMemProfile(name string) {
-	nm := fmt.Sprintf("%s.%d", name, profileNumber)
-	profileNumber++
-	f, err := os.Create(nm)
-	if err != nil {
-		log.Fatal("could not create memory profile: ", err)
-	}
-	runtime.GC() // get up-to-date statistics
-	if err := pprof.WriteHeapProfile(f); err != nil {
-		log.Fatal("could not write memory profile: ", err)
-	}
-	f.Close()
-	log.Printf("wrote mem profile %q", nm)
 }
 
 // map [0,inf) to [0,1) monotonically
@@ -892,18 +886,8 @@ func squashRange(j int) float64 {
 //
 // These 'priority' criteria affects how documents are ordered within a shard. It's
 // also used to help guess a file's rank when we're missing ranking information.
-func IsLowPriority(file string) bool {
-	return testRe.MatchString(file) || isGenerated(file) || isVendored(file)
-}
-
-var testRe = regexp.MustCompile("[Tt]est")
-
-func isGenerated(file string) bool {
-	return strings.HasSuffix(file, "min.js") || strings.HasSuffix(file, "js.map")
-}
-
-func isVendored(file string) bool {
-	return strings.Contains(file, "vendor/") || strings.Contains(file, "node_modules/")
+func IsLowPriority(path string, content []byte) bool {
+	return enry.IsTest(path) || enry.IsVendor(path) || enry.IsGenerated(path, content)
 }
 
 type rankedDoc struct {
@@ -922,17 +906,17 @@ func rank(d *zoekt.Document, origIdx int) []float64 {
 	}
 
 	generated := 0.0
-	if isGenerated(d.Name) {
+	if enry.IsGenerated(d.Name, d.Content) {
 		generated = 1.0
 	}
 
 	vendor := 0.0
-	if isVendored(d.Name) {
+	if enry.IsVendor(d.Name) {
 		vendor = 1.0
 	}
 
 	test := 0.0
-	if testRe.MatchString(d.Name) {
+	if enry.IsTest(d.Name) {
 		test = 1.0
 	}
 
@@ -1012,13 +996,48 @@ func (b *Builder) buildShard(todo []*zoekt.Document, nextShardNum int) (*finishe
 
 	sortDocuments(todo)
 
-	for _, t := range todo {
+	for idx, t := range todo {
 		if err := shardBuilder.Add(*t); err != nil {
 			return nil, err
+		}
+
+		if idx%10_000 == 0 {
+			b.CheckMemoryUsage()
 		}
 	}
 
 	return b.writeShard(name, shardBuilder)
+}
+
+// CheckMemoryUsage checks the memory usage of the process and writes a memory profile if the heap usage exceeds the
+// configured threshold. NOTE: this method is expensive and should only be used for debugging.
+func (b *Builder) CheckMemoryUsage() {
+	// Don't check memory if heap profiling is disabled, or we've already written 10 profiles
+	if b.opts.HeapProfileTriggerBytes <= 0 || b.heapProfileNum >= 10 {
+		return
+	}
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	if m.HeapAlloc > b.opts.HeapProfileTriggerBytes && b.heapProfileMu.TryLock() {
+		defer b.heapProfileMu.Unlock()
+
+		log.Printf("writing memory profile, heap usage: %s", humanize.Bytes(m.HeapAlloc))
+		name := filepath.Join(b.opts.IndexDir, fmt.Sprintf("indexmemory.prof.%d", b.heapProfileNum))
+		f, err := os.Create(name)
+		if err != nil {
+			log.Printf("failed to create memory profile file: %v", err)
+			return
+		}
+
+		err = pprof.WriteHeapProfile(f)
+		if err != nil {
+			log.Printf("failed to write memory profile: %v", err)
+		}
+
+		b.heapProfileNum++
+	}
 }
 
 func (b *Builder) newShardBuilder() (*zoekt.IndexBuilder, error) {
@@ -1056,7 +1075,7 @@ func (b *Builder) writeShard(fn string, ib *zoekt.IndexBuilder) (*finishedShard,
 	if err := ib.Write(f); err != nil {
 		return nil, err
 	}
-	fi, err := f.Stat()
+	// fi, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
@@ -1064,11 +1083,11 @@ func (b *Builder) writeShard(fn string, ib *zoekt.IndexBuilder) (*finishedShard,
 		return nil, err
 	}
 
-	log.Printf("finished shard %s: %d index bytes (overhead %3.1f), %d files processed \n",
-		fn,
-		fi.Size(),
-		float64(fi.Size())/float64(ib.ContentSize()+1),
-		ib.NumFiles())
+	// log.Printf("finished shard %s: %d index bytes (overhead %3.1f), %d files processed \n",
+	// 	fn,
+	// 	fi.Size(),
+	// 	float64(fi.Size())/float64(ib.ContentSize()+1),
+	// 	ib.NumFiles())
 
 	return &finishedShard{f.Name(), fn}, nil
 }
